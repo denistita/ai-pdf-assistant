@@ -1,42 +1,56 @@
 # AI PDF Assistant
 
-An AI-powered PDF question-answering application that uses Retrieval-Augmented Generation (RAG) to answer natural-language questions based on the contents of an uploaded PDF document.
+A deployed conversational AI application that uses **Retrieval-Augmented Generation (RAG)** to let users upload PDF documents and ask natural-language questions about their content.
 
-The application extracts text from a PDF, divides the document into manageable chunks, generates vector embeddings, stores them in a FAISS vector index, retrieves the most relevant document sections for a user's question, and uses an OpenAI language model to generate a document-grounded response.
+The application extracts text while preserving page information, divides the document into overlapping chunks, generates vector embeddings, stores them in a FAISS vector index, and retrieves relevant document context for each question. An OpenAI language model then generates a response grounded in the retrieved content, with source-page citations.
+
+## Live Demo
+
+**Try the deployed application:**  
+https://denistita-ai-pdf-assistant.streamlit.app/
 
 ## Features
 
 - Upload and process PDF documents
-- Extract text from PDF pages
-- Split documents into overlapping text chunks
-- Generate semantic embeddings with OpenAI
-- Store and search document embeddings with FAISS
-- Retrieve relevant document context using similarity search
-- Ask natural-language questions about uploaded documents
-- Generate answers grounded in retrieved document content
-- Interactive web interface built with Streamlit
-- Secure API-key handling through environment variables
+- Page-aware PDF text extraction
+- Overlapping text chunking with page metadata
+- OpenAI vector embeddings
+- FAISS vector similarity search
+- Retrieval-Augmented Generation (RAG)
+- Natural-language document question answering
+- Conversational follow-up questions
+- Context-aware query rewriting
+- Document-grounded responses
+- Source-page citations
+- Conversation history within the active session
+- Responsive Streamlit web interface
+- Secure API-key handling using environment variables and Streamlit Secrets
+- Public deployment with Streamlit Community Cloud
 
 ## Architecture
 
 ```text
 PDF Upload
     ↓
-Text Extraction (PyPDF2)
+Page-Aware Text Extraction
     ↓
-Text Chunking (LangChain)
+Overlapping Text Chunks + Page Metadata
     ↓
 OpenAI Embeddings
     ↓
-FAISS Vector Store
+FAISS Vector Index
     ↓
-Similarity Search
+User Question
+    ↓
+Conversation-Aware Query Rewriting
+    ↓
+Semantic Similarity Search
     ↓
 Relevant Document Context
     ↓
 OpenAI Language Model
     ↓
-Document-Grounded Answer
+Grounded Answer + Source Page Citations
 ```
 
 ## Technology Stack
@@ -54,21 +68,42 @@ Document-Grounded Answer
 ## How It Works
 
 1. The user uploads a PDF through the Streamlit interface.
-2. PyPDF2 extracts readable text from the document.
-3. LangChain's `RecursiveCharacterTextSplitter` divides the text into overlapping chunks.
-4. OpenAI embeddings convert the chunks into vector representations.
-5. FAISS stores the vectors and provides similarity search.
-6. When the user submits a question, FAISS retrieves the most relevant portions of the document.
-7. The retrieved context and question are passed to an OpenAI language model.
-8. The model generates an answer based on the retrieved document context.
 
-## Installation
+2. PyPDF2 extracts readable text from each page while preserving page numbers.
+
+3. LangChain's `RecursiveCharacterTextSplitter` divides page content into overlapping chunks.
+
+4. Each chunk is stored with page metadata so retrieved information can be traced back to its source page.
+
+5. OpenAI embeddings convert the document chunks into vector representations.
+
+6. FAISS creates an in-memory vector index for semantic similarity search.
+
+7. When the user asks a question, recent conversation history is used to rewrite contextual follow-up questions into standalone retrieval queries.
+
+8. FAISS retrieves the document chunks most semantically relevant to the question.
+
+9. The retrieved document context, conversation context, and current question are passed to an OpenAI language model.
+
+10. The model is instructed to answer using only the supplied document context.
+
+11. The application displays the generated response together with the source pages associated with the retrieved context.
+
+## Document Grounding
+
+The application is designed to reduce unsupported answers by constraining generation to retrieved PDF content.
+
+Conversation history is used to understand follow-up questions and references, but it is not treated as an additional factual source.
+
+If the requested information cannot be found in the retrieved document context, the assistant is instructed to state that the information could not be found in the uploaded document.
+
+## Local Installation
 
 Clone the repository:
 
 ```bash
-git clone https://github.com/denistita/chatbot.git
-cd chatbot
+git clone https://github.com/denistita/ai-pdf-assistant.git
+cd ai-pdf-assistant
 ```
 
 Create a Python virtual environment:
@@ -77,33 +112,26 @@ Create a Python virtual environment:
 python -m venv .venv
 ```
 
-Activate the environment.
+Install the required dependencies.
 
-### Windows
+### Windows PowerShell
 
 ```powershell
-.\.venv\Scripts\activate
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
 ### macOS/Linux
 
 ```bash
 source .venv/bin/activate
-```
-
-Install the required dependencies:
-
-```bash
 pip install -r requirements.txt
 ```
 
 ## OpenAI API Configuration
 
-This application requires an OpenAI API key.
+The application requires an OpenAI API key.
 
-Set the API key as an environment variable.
-
-### PowerShell
+### Windows PowerShell
 
 ```powershell
 $env:OPENAI_API_KEY="your-api-key"
@@ -117,45 +145,71 @@ export OPENAI_API_KEY="your-api-key"
 
 Never commit API keys or other credentials to the repository.
 
-## Run the Application
+For the hosted version, the API key is configured securely using **Streamlit Secrets** rather than being stored in source code.
 
-Start the Streamlit application:
+## Run Locally
+
+### Windows PowerShell
+
+```powershell
+.\.venv\Scripts\python.exe -m streamlit run chatbot.py
+```
+
+### macOS/Linux
 
 ```bash
 streamlit run chatbot.py
 ```
 
-Then open the local Streamlit address displayed in the terminal.
+Streamlit will provide a local address that can be opened in a web browser.
 
 ## Project Structure
 
 ```text
-chatbot/
+ai-pdf-assistant/
 ├── chatbot.py
 ├── requirements.txt
 ├── README.md
 └── .gitignore
 ```
 
-Local development files such as `.venv/`, `.idea/`, environment files, API keys, and uploaded documents are excluded from version control.
+Local development files such as `.venv/`, `.idea/`, `.vscode/`, environment files, API keys, and uploaded documents are excluded from version control.
 
 ## Security
 
-API credentials are read from environment variables rather than stored in source code.
+API credentials are never stored directly in the application source code.
 
-Uploaded documents and sensitive or proprietary data should not be committed to this repository.
+For local development, credentials can be supplied through environment variables. The deployed application supports Streamlit's encrypted Secrets configuration.
+
+Uploaded documents are processed by the running application and are not intended to be committed to this repository.
+
+Sensitive, confidential, or proprietary documents should not be added to the public repository.
+
+## Deployment
+
+The application is deployed using **Streamlit Community Cloud** from the `main` branch of this repository.
+
+Live application:
+
+https://denistita-ai-pdf-assistant.streamlit.app/
+
+Updates pushed to the deployed GitHub branch can be picked up by the Streamlit deployment.
 
 ## Future Improvements
 
 Potential enhancements include:
 
-- Support for multiple PDF documents
-- Persistent vector indexes
-- Conversational question history
-- Source citations and page references
-- Improved document metadata handling
+- Multiple-document conversations
+- Persistent or cached vector indexes
+- Streaming AI responses
+- More detailed citation snippets
+- Hybrid search and reranking
 - Additional document formats
-- Deployment to a hosted environment
+- Improved document metadata filtering
+- Automated RAG evaluation and groundedness testing
+- Docker containerization
+- CI/CD validation and automated testing
+- Usage and cost controls for public deployments
 
 ## Author
 
@@ -163,6 +217,6 @@ Potential enhancements include:
 
 Software Engineer & DevSecOps Engineer
 
-- Portfolio: denistita.com
-- LinkedIn: linkedin.com/in/denistita
-- GitHub: github.com/denistita
+- Portfolio: https://denistita.com
+- LinkedIn: https://www.linkedin.com/in/denistita/
+- GitHub: https://github.com/denistita
