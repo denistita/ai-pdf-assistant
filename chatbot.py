@@ -22,9 +22,10 @@ st.set_page_config(
 st.title("📄 AI PDF Assistant")
 
 st.write(
-    "Upload a PDF document and ask questions about its contents. "
-    "The application uses semantic search and an OpenAI language model "
-    "to generate answers based on the uploaded document."
+    "Upload a PDF and have a conversation about its contents. "
+    "The assistant uses Retrieval-Augmented Generation (RAG) "
+    "to retrieve relevant information and generate "
+    "document-grounded answers with source pages."
 )
 
 
@@ -42,17 +43,33 @@ if not OPENAI_API_KEY:
 
 
 # ---------------------------------------------------------
+# Session state
+# ---------------------------------------------------------
+
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+if "vector_store" not in st.session_state:
+    st.session_state.vector_store = None
+
+if "document_name" not in st.session_state:
+    st.session_state.document_name = None
+
+
+# ---------------------------------------------------------
 # PDF text extraction
 # ---------------------------------------------------------
 
 def extract_pages_from_pdf(pdf_file):
-    """Extract text and page numbers from all readable PDF pages."""
+    """Extract text and page numbers from readable PDF pages."""
 
     pdf_reader = PdfReader(pdf_file)
-
     pages = []
 
-    for page_number, page in enumerate(pdf_reader.pages, start=1):
+    for page_number, page in enumerate(
+        pdf_reader.pages,
+        start=1
+    ):
         page_text = page.extract_text()
 
         if page_text and page_text.strip():
@@ -71,7 +88,7 @@ def extract_pages_from_pdf(pdf_file):
 # ---------------------------------------------------------
 
 def create_text_chunks(pages):
-    """Split PDF pages into chunks while preserving page metadata."""
+    """Split pages into chunks while preserving page metadata."""
 
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=1000,
@@ -88,6 +105,7 @@ def create_text_chunks(pages):
         )
 
         for chunk in page_chunks:
+
             documents.append(
                 Document(
                     page_content=chunk,
@@ -105,7 +123,7 @@ def create_text_chunks(pages):
 # ---------------------------------------------------------
 
 def create_vector_store(documents):
-    """Create embeddings and store document chunks in FAISS."""
+    """Create embeddings and store chunks in FAISS."""
 
     embeddings = OpenAIEmbeddings(
         api_key=OPENAI_API_KEY
@@ -118,14 +136,101 @@ def create_vector_store(documents):
 
 
 # ---------------------------------------------------------
-# Generate an answer
+# Build conversation history
 # ---------------------------------------------------------
 
-def generate_answer(vector_store, question):
-    """Retrieve relevant chunks and generate a cited answer."""
+def build_conversation_history(messages):
+    """Create concise conversation history for follow-up questions."""
 
+    history = []
+
+    # Limit history so prompts do not grow indefinitely.
+    for message in messages[-6:]:
+
+        role = (
+            "User"
+            if message["role"] == "user"
+            else "Assistant"
+        )
+
+        history.append(
+            f"{role}: {message['content']}"
+        )
+
+    return "\n".join(history)
+
+
+# ---------------------------------------------------------
+# Generate answer
+# ---------------------------------------------------------
+
+def generate_answer(
+    vector_store,
+    question,
+    messages
+):
+    """
+    Retrieve relevant chunks and generate a contextual,
+    document-grounded answer with source pages.
+    """
+
+    conversation_history = build_conversation_history(
+        messages
+    )
+
+    # First rewrite contextual follow-up questions into
+    # standalone questions for better vector retrieval.
+    rewrite_prompt = ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                """
+                Rewrite the user's latest question as a standalone
+                search question using the conversation history.
+
+                Do not answer the question.
+
+                If the question is already standalone, return it
+                without changing its meaning.
+                """
+            ),
+            (
+                "human",
+                """
+                Conversation history:
+
+                {history}
+
+                Latest question:
+
+                {question}
+
+                Standalone search question:
+                """
+            )
+        ]
+    )
+
+    llm = ChatOpenAI(
+        api_key=OPENAI_API_KEY,
+        model="gpt-4o-mini",
+        temperature=0
+    )
+
+    rewrite_chain = rewrite_prompt | llm
+
+    rewritten_response = rewrite_chain.invoke(
+        {
+            "history": conversation_history,
+            "question": question
+        }
+    )
+
+    search_question = rewritten_response.content.strip()
+
+    # Retrieve document chunks using the standalone question.
     relevant_documents = vector_store.similarity_search(
-        question,
+        search_question,
         k=4
     )
 
@@ -145,32 +250,46 @@ def generate_answer(vector_store, question):
 
     context = "\n\n".join(context_parts)
 
-    prompt = ChatPromptTemplate.from_messages(
+    # Generate final answer using retrieved context and
+    # conversation history.
+    answer_prompt = ChatPromptTemplate.from_messages(
         [
             (
                 "system",
                 """
-                You are an AI assistant that answers questions about
-                an uploaded PDF document.
+                You are an AI assistant that answers questions
+                about an uploaded PDF document.
 
-                Answer the question using only the supplied document context.
+                Use only the supplied document context to provide
+                factual information about the document.
+
+                Conversation history may be used to understand
+                references and follow-up questions, but it must
+                not be treated as an additional factual source.
 
                 Do not use outside knowledge.
 
-                If the answer cannot be found in the document, say:
-                "I could not find that information in the uploaded document."
+                If the answer cannot be found in the supplied
+                document context, say:
 
-                Keep the answer clear and concise.
+                "I could not find that information in the
+                uploaded document."
+
+                Keep answers clear and concise.
                 """
             ),
             (
                 "human",
                 """
+                Conversation history:
+
+                {history}
+
                 Document context:
 
                 {context}
 
-                Question:
+                Current question:
 
                 {question}
                 """
@@ -178,16 +297,11 @@ def generate_answer(vector_store, question):
         ]
     )
 
-    llm = ChatOpenAI(
-        api_key=OPENAI_API_KEY,
-        model="gpt-4o-mini",
-        temperature=0
-    )
+    answer_chain = answer_prompt | llm
 
-    chain = prompt | llm
-
-    response = chain.invoke(
+    response = answer_chain.invoke(
         {
+            "history": conversation_history,
             "context": context,
             "question": question
         }
@@ -205,7 +319,7 @@ def generate_answer(vector_store, question):
 
 
 # ---------------------------------------------------------
-# Document upload
+# Sidebar
 # ---------------------------------------------------------
 
 with st.sidebar:
@@ -218,8 +332,15 @@ with st.sidebar:
     )
 
     st.caption(
-        "Your PDF is processed so you can ask questions about its contents."
+        "Your PDF is processed so you can ask questions "
+        "about its contents."
     )
+
+    if st.button("Clear Chat"):
+
+        st.session_state.messages = []
+
+        st.rerun()
 
 
 # ---------------------------------------------------------
@@ -237,65 +358,88 @@ if uploaded_file is not None:
 
         st.stop()
 
-    try:
+    # Only rebuild embeddings when a different PDF is uploaded.
+    if (
+        st.session_state.vector_store is None
+        or st.session_state.document_name
+        != uploaded_file.name
+    ):
 
-        with st.spinner("Reading document..."):
+        try:
 
-            pages = extract_pages_from_pdf(
-                uploaded_file
+            with st.spinner("Reading document..."):
+
+                pages = extract_pages_from_pdf(
+                    uploaded_file
+                )
+
+            if not pages:
+
+                st.error(
+                    "No readable text was found in this PDF."
+                )
+
+                st.stop()
+
+            documents = create_text_chunks(
+                pages
             )
 
-        if not pages:
+            with st.spinner(
+                "Creating document search index..."
+            ):
+
+                st.session_state.vector_store = (
+                    create_vector_store(documents)
+                )
+
+            st.session_state.document_name = (
+                uploaded_file.name
+            )
+
+            # A new document starts a new conversation.
+            st.session_state.messages = []
+
+            st.success(
+                f"Document ready — "
+                f"{len(documents)} text chunks indexed "
+                f"from {len(pages)} readable pages."
+            )
+
+        except Exception as error:
 
             st.error(
-                "No readable text was found in this PDF."
+                "The document could not be processed."
             )
+
+            with st.expander(
+                "Technical details"
+            ):
+                st.code(str(error))
 
             st.stop()
 
-        documents = create_text_chunks(pages)
 
-        with st.spinner(
-            "Creating document search index..."
+    # -----------------------------------------------------
+    # Display conversation
+    # -----------------------------------------------------
+
+    for message in st.session_state.messages:
+
+        with st.chat_message(
+            message["role"]
         ):
 
-            vector_store = create_vector_store(
-                documents
+            st.markdown(
+                message["content"]
             )
 
-        st.success(
-            f"Document ready — "
-            f"{len(documents)} text chunks indexed "
-            f"from {len(pages)} readable pages."
-        )
-
-
-        # -------------------------------------------------
-        # User question
-        # -------------------------------------------------
-
-        question = st.text_input(
-            "Ask a question about your document",
-            placeholder="What is this document about?"
-        )
-
-
-        if question:
-
-            with st.spinner(
-                "Searching the document..."
+            if (
+                message["role"] == "assistant"
+                and message.get("sources")
             ):
 
-                answer, source_pages = generate_answer(
-                    vector_store,
-                    question
-                )
-
-            st.subheader("Answer")
-
-            st.write(answer)
-
-            if source_pages:
+                source_pages = message["sources"]
 
                 pages_display = ", ".join(
                     str(page)
@@ -309,22 +453,97 @@ if uploaded_file is not None:
                 )
 
                 st.caption(
-                    f"📚 Sources: {label} {pages_display}"
+                    f"📚 Sources: "
+                    f"{label} {pages_display}"
                 )
 
 
-    except Exception as error:
+    # -----------------------------------------------------
+    # Chat input
+    # -----------------------------------------------------
 
-        st.error(
-            "The document could not be processed."
+    question = st.chat_input(
+        "Ask a question about your document"
+    )
+
+    if question:
+
+        # Display and save user message.
+        with st.chat_message("user"):
+            st.markdown(question)
+
+        # Capture history before adding the current
+        # question so it is not duplicated.
+        previous_messages = (
+            st.session_state.messages.copy()
         )
 
-        with st.expander("Technical details"):
-            st.code(str(error))
+        st.session_state.messages.append(
+            {
+                "role": "user",
+                "content": question
+            }
+        )
+
+        # Generate assistant response.
+        with st.chat_message("assistant"):
+
+            with st.spinner(
+                "Searching the document..."
+            ):
+
+                try:
+
+                    answer, source_pages = (
+                        generate_answer(
+                            st.session_state.vector_store,
+                            question,
+                            previous_messages
+                        )
+                    )
+
+                    st.markdown(answer)
+
+                    if source_pages:
+
+                        pages_display = ", ".join(
+                            str(page)
+                            for page in source_pages
+                        )
+
+                        label = (
+                            "Page"
+                            if len(source_pages) == 1
+                            else "Pages"
+                        )
+
+                        st.caption(
+                            f"📚 Sources: "
+                            f"{label} {pages_display}"
+                        )
+
+                    st.session_state.messages.append(
+                        {
+                            "role": "assistant",
+                            "content": answer,
+                            "sources": source_pages
+                        }
+                    )
+
+                except Exception as error:
+
+                    st.error(
+                        "The question could not be processed."
+                    )
+
+                    with st.expander(
+                        "Technical details"
+                    ):
+                        st.code(str(error))
 
 
 else:
 
     st.info(
-        "Upload a PDF from the sidebar to get started."
+        "Upload a PDF from the sidebar to start chatting."
     )
