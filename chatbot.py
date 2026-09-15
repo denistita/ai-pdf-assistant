@@ -398,6 +398,8 @@ if not OPENAI_API_KEY:
     except (KeyError, FileNotFoundError):
         OPENAI_API_KEY = None
 
+st.write("Secret names detected:", list(st.secrets.keys()))
+
 if not OPENAI_API_KEY:
     st.warning(
         "OPENAI_API_KEY is not configured. "
