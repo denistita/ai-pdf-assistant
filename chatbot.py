@@ -393,6 +393,12 @@ st.markdown(
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 if not OPENAI_API_KEY:
+    try:
+        OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
+    except (KeyError, FileNotFoundError):
+        OPENAI_API_KEY = None
+
+if not OPENAI_API_KEY:
     st.warning(
         "OPENAI_API_KEY is not configured. "
         "Set the environment variable before using the application."
