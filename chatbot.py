@@ -403,7 +403,6 @@ st.write("Secret names detected:", list(st.secrets.keys()))
 if not OPENAI_API_KEY:
     st.warning(
         "OPENAI_API_KEY is not configured. "
-        "Set the environment variable before using the application."
     )
 
 
