@@ -5,6 +5,7 @@ from PyPDF2 import PdfReader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_community.vectorstores import FAISS
+from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
 
 
@@ -44,28 +45,33 @@ if not OPENAI_API_KEY:
 # PDF text extraction
 # ---------------------------------------------------------
 
-def extract_text_from_pdf(pdf_file):
-    """Extract text from all readable pages in a PDF."""
+def extract_pages_from_pdf(pdf_file):
+    """Extract text and page numbers from all readable PDF pages."""
 
     pdf_reader = PdfReader(pdf_file)
 
-    extracted_text = []
+    pages = []
 
-    for page in pdf_reader.pages:
+    for page_number, page in enumerate(pdf_reader.pages, start=1):
         page_text = page.extract_text()
 
-        if page_text:
-            extracted_text.append(page_text)
+        if page_text and page_text.strip():
+            pages.append(
+                {
+                    "text": page_text,
+                    "page": page_number
+                }
+            )
 
-    return "\n".join(extracted_text)
+    return pages
 
 
 # ---------------------------------------------------------
-# Split document into chunks
+# Split document into page-aware chunks
 # ---------------------------------------------------------
 
-def create_text_chunks(text):
-    """Split extracted document text into overlapping chunks."""
+def create_text_chunks(pages):
+    """Split PDF pages into chunks while preserving page metadata."""
 
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=1000,
@@ -73,22 +79,40 @@ def create_text_chunks(text):
         length_function=len
     )
 
-    return text_splitter.split_text(text)
+    documents = []
+
+    for page in pages:
+
+        page_chunks = text_splitter.split_text(
+            page["text"]
+        )
+
+        for chunk in page_chunks:
+            documents.append(
+                Document(
+                    page_content=chunk,
+                    metadata={
+                        "page": page["page"]
+                    }
+                )
+            )
+
+    return documents
 
 
 # ---------------------------------------------------------
 # Create FAISS vector store
 # ---------------------------------------------------------
 
-def create_vector_store(chunks):
+def create_vector_store(documents):
     """Create embeddings and store document chunks in FAISS."""
 
     embeddings = OpenAIEmbeddings(
         api_key=OPENAI_API_KEY
     )
 
-    return FAISS.from_texts(
-        texts=chunks,
+    return FAISS.from_documents(
+        documents=documents,
         embedding=embeddings
     )
 
@@ -98,17 +122,28 @@ def create_vector_store(chunks):
 # ---------------------------------------------------------
 
 def generate_answer(vector_store, question):
-    """Retrieve relevant document chunks and answer the question."""
+    """Retrieve relevant chunks and generate a cited answer."""
 
     relevant_documents = vector_store.similarity_search(
         question,
         k=4
     )
 
-    context = "\n\n".join(
-        document.page_content
-        for document in relevant_documents
-    )
+    context_parts = []
+
+    for document in relevant_documents:
+
+        page_number = document.metadata.get(
+            "page",
+            "Unknown"
+        )
+
+        context_parts.append(
+            f"[Page {page_number}]\n"
+            f"{document.page_content}"
+        )
+
+    context = "\n\n".join(context_parts)
 
     prompt = ChatPromptTemplate.from_messages(
         [
@@ -120,8 +155,12 @@ def generate_answer(vector_store, question):
 
                 Answer the question using only the supplied document context.
 
+                Do not use outside knowledge.
+
                 If the answer cannot be found in the document, say:
                 "I could not find that information in the uploaded document."
+
+                Keep the answer clear and concise.
                 """
             ),
             (
@@ -154,7 +193,15 @@ def generate_answer(vector_store, question):
         }
     )
 
-    return response.content
+    source_pages = sorted(
+        {
+            document.metadata.get("page")
+            for document in relevant_documents
+            if document.metadata.get("page") is not None
+        }
+    )
+
+    return response.content, source_pages
 
 
 # ---------------------------------------------------------
@@ -182,6 +229,7 @@ with st.sidebar:
 if uploaded_file is not None:
 
     if not OPENAI_API_KEY:
+
         st.error(
             "An OpenAI API key must be configured before "
             "the document can be processed."
@@ -193,9 +241,11 @@ if uploaded_file is not None:
 
         with st.spinner("Reading document..."):
 
-            text = extract_text_from_pdf(uploaded_file)
+            pages = extract_pages_from_pdf(
+                uploaded_file
+            )
 
-        if not text.strip():
+        if not pages:
 
             st.error(
                 "No readable text was found in this PDF."
@@ -203,14 +253,20 @@ if uploaded_file is not None:
 
             st.stop()
 
-        chunks = create_text_chunks(text)
+        documents = create_text_chunks(pages)
 
-        with st.spinner("Creating document search index..."):
+        with st.spinner(
+            "Creating document search index..."
+        ):
 
-            vector_store = create_vector_store(chunks)
+            vector_store = create_vector_store(
+                documents
+            )
 
         st.success(
-            f"Document ready — {len(chunks)} text chunks indexed."
+            f"Document ready — "
+            f"{len(documents)} text chunks indexed "
+            f"from {len(pages)} readable pages."
         )
 
 
@@ -226,9 +282,11 @@ if uploaded_file is not None:
 
         if question:
 
-            with st.spinner("Searching the document..."):
+            with st.spinner(
+                "Searching the document..."
+            ):
 
-                answer = generate_answer(
+                answer, source_pages = generate_answer(
                     vector_store,
                     question
                 )
@@ -236,6 +294,23 @@ if uploaded_file is not None:
             st.subheader("Answer")
 
             st.write(answer)
+
+            if source_pages:
+
+                pages_display = ", ".join(
+                    str(page)
+                    for page in source_pages
+                )
+
+                label = (
+                    "Page"
+                    if len(source_pages) == 1
+                    else "Pages"
+                )
+
+                st.caption(
+                    f"📚 Sources: {label} {pages_display}"
+                )
 
 
     except Exception as error:
